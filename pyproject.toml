@@ -12,6 +12,7 @@ jira = "^2.0"
 xlwt = "^1.3"
 python-dateutil = "^2.8"
 workdays = "^1.4"
+pygithub = "^1.45"
 
 [tool.poetry.dev-dependencies]
 pytest = "^3.0"

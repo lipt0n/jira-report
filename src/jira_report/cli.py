@@ -216,28 +216,21 @@ def find_issues_for_pr(pr: PullRequest.PullRequest, issues: List[jira.Issue] ):
             if SequenceMatcher(None, name, prname).ratio() > 0.75 :
                 results.append(i)
                 return results
-    if len(results)==0:  
-        # still nothing? dont be so picky
-        for i in issues: 
-            name = i.fields.summary.lower()
-            prname = pr.title.lower()
-            if SequenceMatcher(None, name, prname).ratio() > 0.5 :
-                results.append(i)
-                return results
-    if len(results)==0:  
-        # fuck it , gimme something
-        for i in issues: 
-            name = i.fields.summary.lower()
-            prname = pr.title.lower()
-            if SequenceMatcher(None, name, prname).ratio() > 0.25 :
-                results.append(i)
-                return results
+    pr_closing_date = pr.closed_at
+    date_min = pr_closing_date - datetime.timedelta(days=4)
+    date_max = pr_closing_date + datetime.timedelta(days=4)
+    for i in issues: 
+        start_date, end_date = get_issue_dates(i)
+        if type(end_date) is not str and date_min <= end_date <= date_max:
+            results.append(i)
+        
+
     if len(results)==0:
         LOGGER.warning(f"nothing for: {find_in}")
     return results
         
 
-def get_issue_dates(issue: jira.Issue, api):
+def get_issue_dates(issue: jira.Issue, api=None):
     date_from = ''
     date_to = ''
     for history in issue.changelog.histories:
@@ -304,6 +297,7 @@ def xls_export(issues: List[jira.Issue],
         sheet.row(0).height = row_height
         # sheet.col(5).width = 300000
     row = 1
+    results  = []
     for  pr in pullrequests:
         
 
@@ -312,10 +306,9 @@ def xls_export(issues: List[jira.Issue],
 
         issues_for_pr =  find_issues_for_pr(pr, issues)
         start_issue = pr.created_at
-        for issue in issues_for_pr:
-            start_date, end_date = get_issue_dates(issue, api)
-            if type(start_date) is not str and start_date < start_issue :
-                start_issue = start_date 
+
+
+
 
 
         write(sheet, row, 0, start_issue , styles.hd)
