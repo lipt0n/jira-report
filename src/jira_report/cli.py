@@ -13,6 +13,7 @@ $ echo 'JIRA_API_TOKEN="qeYEtFiNUJ8FCSEbBp25jNKc"' >> .env
 
 Interactive prompt appears if a local .env file is missing.
 """
+from difflib import SequenceMatcher
 
 import argparse
 import calendar
@@ -26,6 +27,7 @@ import environs
 import jira
 import workdays
 import xlwt
+from github import Github, PullRequest
 
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
@@ -42,16 +44,18 @@ def run() -> None:
 def main(args: argparse.Namespace) -> None:
     """Script entry point."""
 
-    title = args.date.strftime("%Y_%B")
+    title = args.date.strftime("%Y_%m-")+args.date2.strftime("%Y_%m")
     filename = f'Jira_{title}.xls'
 
     if os.path.exists(filename) and not args.force_overwrite:
         LOGGER.error('File already exists: "%s", use the -f flag to overwrite', filename)
     else:
-        issues = find_issues(args.date, jira_config())
+        api = jira.JIRA(**jira_config())
+        issues = find_issues(args.date, args.date2,api)
+        pullrequests = find_pullrequests(github_config(), args.date, args.date2)
         if len(issues) > 0:
             LOGGER.info('Found %d tasks assigned to you during that period.', len(issues))
-            xls_export(issues, month_hours(args.date, args.business_days), title, filename)
+            xls_export(issues, pullrequests, month_hours(args.date, args.business_days), title, filename,api)
         else:
             LOGGER.info('There were no tasks assigned to you during that period.')
 
@@ -66,13 +70,28 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('-f', '--force-overwrite', action='store_true', default=False)
     parser.add_argument('-d', '--days', dest='business_days', type=int)
-    parser.add_argument('--month',
+    parser.add_argument('--start',
                         metavar='YYYY/MM',
                         dest='date',
                         type=parse_month,
                         default=datetime.date.today())
+    parser.add_argument('--end',
+                        metavar='YYYY/MM',
+                        dest='date2',
+                        type=parse_month,
+                        default=datetime.date.today())
     return parser.parse_args()
 
+
+def github_config() ->  Dict[str, str]:
+    environs.load_dotenv()
+
+    load_var('GITHUB_TOKEN')
+    return {
+        'token': os.getenv('GITHUB_TOKEN'),
+        'username': os.getenv('GITHUB_USERNAME'),
+        'repo': os.getenv('GITHUB_REPO')
+    }
 
 def jira_config() -> Dict[str, str]:
     """Return a dict of Jira configuration options."""
@@ -101,18 +120,37 @@ def load_var(name: str) -> None:
             print(f'{name}="{value}"', file=file_object)
         environs.load_dotenv()
 
+def find_pullrequests(config: Dict[str, str], date: datetime.date,date2: datetime.date):
+    g = Github(config['token'], per_page=100)
+    repo = g.get_repo(config['repo'])
+    pulls = repo.get_pulls(state='closed', sort='created')
+    LOGGER.info('get PRs from github (%d)', pulls.totalCount)
+    l = []
+    for i, pr in enumerate(pulls):
+        if i%101 == 0 :
+            LOGGER.info(f"{i}/{pulls.totalCount} loaded")
+        if pr.user.login == config['username'] and date <= pr.created_at.date() <= date2:
+            l.append(pr)
+    LOGGER.info(' (%d) for user %s', pulls.totalCount, config['username'])
+    return l
 
-def find_issues(date: datetime.date, config: Dict[str, str]) -> jira.client.ResultList:
+
+def find_issues(date: datetime.date,date2: datetime.date, api) -> jira.client.ResultList:
     """Return a list of Jira issues for the given month."""
     logging.info('Querying Jira...')
-    api = jira.JIRA(**config)
-    return api.search_issues(jql(date))
+    
+    r = []
+    for i in range(3):
+        r.extend(api.search_issues(jql(date, date2), expand='changelog', maxResults=100, startAt=0+i*100))
+
+    return r
 
 
-def jql(date: datetime.date) -> str:
+def jql(date: datetime.date, date2: datetime.date) -> str:
     """Return a JQL query to get issues assigned to me in the given month."""
     start_date = f'{date.year}/{date.month:02}/01'
-    end_date = f'{date.year}/{date.month:02}/{month_days(date):02}'
+    end_date = f'{date2.year}/{date2.month:02}/{month_days(date2):02}'
+    LOGGER.info(f'assignee was currentUser() DURING ("{start_date}", "{end_date}") ORDER BY created ASC')
     return f'assignee was currentUser() DURING ("{start_date}", "{end_date}") ORDER BY created ASC'
 
 
@@ -133,12 +171,93 @@ def month_hours(date: datetime.date, business_days: Optional[int]) -> int:
     LOGGER.info('Business days=%d (%d hours)', business_days, business_days * 8)
 
     return business_days * 8
+def get_pr(issue:str, pullrequests: List[PullRequest.PullRequest]):
+    names = [issue, '-'.join(issue.split('_'))]
+    if len(issue.split("_"))>1 :
+        names.append(issue.split("_")[1])
+    if len(issue.split("-"))>1 :
+        names.append(issue.split("-")[1])
+    if len(issue.split("FLIP"))>1 :
+        names.append(issue.split("FLIP")[1])
+    
+    for name in names:
+        
+        for pr in pullrequests:
+            if pr.title.lower().find(name.lower()) != -1 or pr.head.ref.lower().find(name.lower())!=-1:
+                LOGGER.info(f"[{issue}] -> [{name}]     in    [{pr.title}][{pr.head.ref.lower()}]  ")
+                LOGGER.info(f"---------------------------------------------------------")    
+                return pr
+            
+def find_issues_for_pr(pr: PullRequest.PullRequest, issues: List[jira.Issue] ):
+    find_in = f"{pr.title} {pr.body} {pr.head.ref}".lower()
+    results = []
+    k = set()
+    for i in issues:     
+        if find_in.find(i.key.lower()) != -1 and i.key not in k:
+            results.append(i)
+            k.add(i.key)
+        if find_in.find("".join(i.key.lower().split('-')) ) != -1 and i.key not in k:
+            results.append(i)
+            k.add(i.key)
+        if find_in.find("_".join(i.key.lower().split('-')) ) != -1 and i.key not in k:
+            results.append(i)
+            k.add(i.key)
+        if find_in.find(i.key.lower().split('-')[1]+' ' ) != -1 and i.key not in k:
+            results.append(i)
+            k.add(i.key)
+        if find_in.find(" ".join(i.key.lower().split('-')[1]) ) != -1 and i.key not in k:
+            results.append(i)
+            k.add(i.key)
+    if len(results)==0:  
+        # now its time for something more fancy
+        for i in issues: 
+            name = i.fields.summary.lower()
+            prname = pr.title.lower()
+            if SequenceMatcher(None, name, prname).ratio() > 0.75 :
+                results.append(i)
+                return results
+    if len(results)==0:  
+        # still nothing? dont be so picky
+        for i in issues: 
+            name = i.fields.summary.lower()
+            prname = pr.title.lower()
+            if SequenceMatcher(None, name, prname).ratio() > 0.5 :
+                results.append(i)
+                return results
+    if len(results)==0:  
+        # fuck it , gimme something
+        for i in issues: 
+            name = i.fields.summary.lower()
+            prname = pr.title.lower()
+            if SequenceMatcher(None, name, prname).ratio() > 0.25 :
+                results.append(i)
+                return results
+    if len(results)==0:
+        LOGGER.warning(f"nothing for: {find_in}")
+    return results
+        
+
+def get_issue_dates(issue: jira.Issue, api):
+    date_from = ''
+    date_to = ''
+    for history in issue.changelog.histories:
+            date_from = date_from = dateutil.parser.parse(history.created).replace(tzinfo=None)
+            for item in history.items:
+
+                if item.field == 'status' and item.toString == 'Done':
+                    date_to = dateutil.parser.parse(history.created).replace(tzinfo=None)
+                if item.field == 'status' and ( item.toString == 'In Progress' or item.toString == 'To Do' ):
+                    date_from = dateutil.parser.parse(history.created).replace(tzinfo=None)
+
+    return date_from, date_to
+
 
 
 def xls_export(issues: List[jira.Issue],
+                pullrequests: List[PullRequest.PullRequest],
                hours: int,
                title: str,
-               filename: str) -> None:
+               filename: str, api) -> None:
     """Save Jira issues to a spreadsheet file."""
 
     class Styles:
@@ -148,26 +267,34 @@ def xls_export(issues: List[jira.Issue],
         middle = xlwt.easyxf('align: vert centre')
 
         date_format = xlwt.easyxf('align: vert centre, horiz left')
-        date_format.num_format_str = 'yyyy-mm-dd, HH:MM'
+        date_format.num_format_str = 'yyyy-mm-dd'
 
         hours_format = xlwt.easyxf('align: vert centre, horiz right')
         hours_format.num_format_str = '#,#0.0 "h"'
+        h = xlwt.easyxf('pattern: pattern solid, fore_colour dark_blue;'
+                              'font: colour white, bold True;')
+        hd = xlwt.easyxf('pattern: pattern solid, fore_colour dark_blue;'
+                              'font: colour white, bold True;')
+        hd.num_format_str = 'yyyy-mm-dd'
 
         invisible = xlwt.easyxf('align: vert centre; font: color white')
 
     workbook = xlwt.Workbook(encoding='utf-8')
     sheet = workbook.add_sheet(title)
 
-    row_height = sheet.row_default_height = 384
+    row_height = sheet.row_default_height = 450
 
     column_headers = (
-        'Task ID',
-        'Task Key',
-        'Task URL',
-        'Project Name',
-        'Created At',
-        'Description',
-        'Worklog',
+
+
+        'Created at', #0
+        'Closed at', #1
+        'Branch / id', #2
+        'Title', #3
+        
+        'Link', #4
+        'Description' #5
+        
     )
 
     styles = Styles()
@@ -175,19 +302,51 @@ def xls_export(issues: List[jira.Issue],
     for column, header in enumerate(column_headers):
         write(sheet, 0, column, header, styles.bold)
         sheet.row(0).height = row_height
+        # sheet.col(5).width = 300000
+    row = 1
+    for  pr in pullrequests:
+        
 
-    for row, issue in enumerate(issues, 1):
         sheet.row(row).height = row_height
-        write(sheet, row, 0, issue.id, styles.middle)
-        write(sheet, row, 1, issue.key, styles.middle)
-        write(sheet, row, 2, make_link(issue.permalink()), styles.middle)
-        write(sheet, row, 3, issue.fields.project.name, styles.middle)
-        write(sheet, row, 4, make_datetime(issue.fields.created), styles.date_format)
-        write(sheet, row, 5, issue.fields.summary, styles.middle)
-        sheet.write(row, 6, hours_worked(row, issues), styles.hours_format)
-        write(sheet, row, 7, story_points(issue), styles.invisible)
 
-    write(sheet, 0, 7, hours, styles.invisible)
+
+        issues_for_pr =  find_issues_for_pr(pr, issues)
+        start_issue = pr.created_at
+        for issue in issues_for_pr:
+            start_date, end_date = get_issue_dates(issue, api)
+            if type(start_date) is datetime and start_date.date() < start_issue :
+                start_issue = start_date.date() 
+            else:
+                print("type(start_date) is datetime ", type(start_date) is datetime )
+                print(start_date)
+
+        write(sheet, row, 0, start_issue , styles.hd)
+        write(sheet, row, 1, pr.closed_at , styles.hd)
+        write(sheet, row, 2, pr.head.ref, styles.h) # branch
+        write(sheet, row, 3, pr.title , styles.h)
+        # write(sheet, row, 4, pr.body , styles.h)
+        write(sheet, row, 4, f"https://github.com/Bomoda/bomoda2/pull/{pr.id}", styles.h)
+        for issue in issues_for_pr:
+            row +=1
+            description = issue.fields.description
+            if not description:
+                description = pr.body
+            if len(description) > 1000:
+                description = description[:1000] + ' ...'
+
+            start_date, end_date = get_issue_dates(issue,api)
+            write(sheet, row, 0, start_date, styles.date_format)
+            write(sheet, row, 1, end_date, styles.date_format)
+            write(sheet, row, 2, issue.key, styles.middle)
+            write(sheet, row, 3, issue.fields.summary, styles.middle)
+            # write(sheet, row, 5, description, styles.middle)
+            sheet.write(row, 5, description, styles.middle)
+           
+            write(sheet, row, 4, make_link(issue.permalink()), styles.middle)
+        row+=2
+        
+
+
 
     workbook.save(filename)
     logging.info('Exported file: "%s"', os.path.join(os.getcwd(), filename))

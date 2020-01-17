@@ -31,19 +31,21 @@ Create a Jira API Token:
 Create a local `.env` file with the following environment variables:
 
 ```shell
+$ echo 'GITHUB_USERNAME="szabadaba"' >> .env
+$ echo 'GITHUB_REPO="jdoe/mycompany"' >> .env
+$ echo 'GITHUB_TOKEN="qeYEtFiNUJ8FCSEbBp25jNKc"' >> .env
 $ echo 'JIRA_SERVER_URL="https://mycompany.atlassian.net"' >> .env
 $ echo 'JIRA_USERNAME="jdoe@mycompany.com"' >> .env
 $ echo 'JIRA_API_TOKEN="qeYEtFiNUJ8FCSEbBp25jNKc"' >> .env
 ```
 
-Alternatively, the script will show an interactive prompt to generate this file for you. 
 
 ## Usage
 
 The command:
 
 ```shell
-$ poetry run jira-report [--month YYYY/MM] [--days N] [--force-overwrite]
+$ poetry run jira-report [--start YYYY/MM] [--end YYY/MM] [--force-overwrite]
 ```
 
 ### Example #1
@@ -54,18 +56,8 @@ Generate a report for the current month:
 $ poetry run jira-report
 ```
 
-### Example #2
-
-Generate a report for a different month:
+### Example 
 
 ```shell
-$ poetry run jira-report --month 2019/10
-```
-
-### Example #3
-
-Generate a report for a different month and a custom number of business days:
-
-```shell
-$ poetry run jira-report --month 2019/10 --days 9
+$ poetry run jira-report --start 2019/01 --end 2019/12 -f
 ```
