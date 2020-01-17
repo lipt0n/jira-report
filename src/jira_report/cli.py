@@ -314,11 +314,9 @@ def xls_export(issues: List[jira.Issue],
         start_issue = pr.created_at
         for issue in issues_for_pr:
             start_date, end_date = get_issue_dates(issue, api)
-            if type(start_date) is datetime and start_date.date() < start_issue :
+            if type(start_date) is not str and start_date.date() < start_issue :
                 start_issue = start_date.date() 
-            else:
-                print("type(start_date) is datetime ", type(start_date) is datetime )
-                print(start_date)
+
 
         write(sheet, row, 0, start_issue , styles.hd)
         write(sheet, row, 1, pr.closed_at , styles.hd)
