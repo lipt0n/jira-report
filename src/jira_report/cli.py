@@ -314,8 +314,8 @@ def xls_export(issues: List[jira.Issue],
         start_issue = pr.created_at
         for issue in issues_for_pr:
             start_date, end_date = get_issue_dates(issue, api)
-            if type(start_date) is not str and start_date.date() < start_issue :
-                start_issue = start_date.date() 
+            if type(start_date) is not str and start_date < start_issue :
+                start_issue = start_date 
 
 
         write(sheet, row, 0, start_issue , styles.hd)
